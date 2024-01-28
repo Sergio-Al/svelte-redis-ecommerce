@@ -1,4 +1,5 @@
 import { createClient, defineScript } from 'redis';
+import { itemsKey, itemsByViewsKey, itemsViewsKey } from "$services/keys";
 
 const client = createClient({
 	socket: {
@@ -7,6 +8,19 @@ const client = createClient({
 	},
 	password: process.env.REDIS_PW,
 	scripts: {
+		unlock: defineScript({
+			NUMBER_OF_KEYS: 1,
+			transformArguments(key: string, token: string) {
+				return [key, token];
+			},
+			transformReply(reply: any) {
+				return reply;
+			},
+			SCRIPT: `
+			if redis.call('GET', KEYS[1]) == ARGV[1] then
+				return redis.call('DEL', KEYS[1])
+			end`
+		}),
 		addOneAndStore: defineScript({
 			NUMBER_OF_KEYS: 1,
 			SCRIPT: `
@@ -19,6 +33,36 @@ const client = createClient({
 			transformReply(reply: any) {
 				return reply
 			}
+		}),
+		incrementView: defineScript({
+			NUMBER_OF_KEYS: 3,
+			SCRIPT: `
+				local itemsViewsKey = KEYS[1]
+				local itemsKey = KEYS[2]
+				local itemsByViewsKey = KEYS[3]
+				local userId = ARGV[1]
+				local itemId = ARGV[2]
+				
+				-- PFADD is a probabilistic data structure that allows us to count unique items
+				local inserted = redis.call('PFADD', itemsViewsKey, userId)
+
+				if inserted == 1 then
+					redis.call('HINCRBY', itemsKey, 'views', 1)
+					redis.call('ZINCRBY', itemsByViewsKey, 1, itemId)
+				end
+				`,
+			transformArguments(itemId: string, userId: string) {
+				return [
+					itemsViewsKey(itemId), // -> items:views#<ID>
+					itemsKey(itemId), // -> items#<ID>
+					itemsByViewsKey(), // -> items:views
+					itemId, // -> <ID>
+					userId, // -> <user ID>
+				];
+
+				// EVAlSHA <ID> 3 itemsViewsKey itemsKey itemsByViewsKey itemId userId
+			},
+			transformReply() { }
 		})
 	}
 });
