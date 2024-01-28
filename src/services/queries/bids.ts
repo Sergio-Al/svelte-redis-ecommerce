@@ -11,7 +11,7 @@ const pause = (duration: number) => {
 };
 
 export const createBid = async (attrs: CreateBidAttrs) => {
-	return withLock(attrs.itemId, async (signal: any) => {
+	return withLock(attrs.itemId, async (lockedClient: typeof client, signal: any) => {
 		// 1) Fetch the item
 		// 2) Doing validation
 		// 3) Writing some data
@@ -42,13 +42,13 @@ export const createBid = async (attrs: CreateBidAttrs) => {
 		}
 
 		return Promise.all([
-			client.rPush(bidHistoryKey(attrs.itemId), serialized),
-			client.hSet(itemsKey(item.id), {
+			lockedClient.rPush(bidHistoryKey(attrs.itemId), serialized),
+			lockedClient.hSet(itemsKey(item.id), {
 				bids: item.bids + 1,
 				price: attrs.amount,
 				highestBidUserId: attrs.userId
 			}),
-			client.zAdd(itemsByPriceKey(), {
+			lockedClient.zAdd(itemsByPriceKey(), {
 				value: item.id,
 				score: attrs.amount
 			})

@@ -1,10 +1,11 @@
 import { client } from "./client";
 import { randomBytes } from 'crypto';
 
-export const withLock = async (key: string, cb: (signal: any) => any) => {
+export const withLock = async (key: string, cb: (redisClient: Client, signal: any) => any) => {
 	// Initialize a few variables to control retry behavior
 	const retryDelayMs = 100;
 	let retries = 20;
+	const timeoutMs = 2000;
 
 	// Generate a random value to store at the lock key
 	const token = randomBytes(6).toString('hex'); // eg. 4a1f6b
@@ -18,7 +19,7 @@ export const withLock = async (key: string, cb: (signal: any) => any) => {
 		// Try to do a SET NX operation
 		const acquired = await client.set(lockKey, token, {
 			NX: true,
-			PX: 2000,
+			PX: timeoutMs,
 		});
 
 		if (!acquired) {
@@ -32,9 +33,10 @@ export const withLock = async (key: string, cb: (signal: any) => any) => {
 			const signal = { expired: false };
 			setTimeout(() => {
 				signal.expired = true;
-			}, 2000);
+			}, timeoutMs);
 
-			const result = await cb(signal);
+			const proxiedClient = buildClientProxy(timeoutMs);
+			const result = await cb(proxiedClient, signal);
 			return result;
 		} finally {
 			await client.unlock(lockKey, token);
@@ -43,7 +45,23 @@ export const withLock = async (key: string, cb: (signal: any) => any) => {
 	}
 };
 
-const buildClientProxy = () => { };
+type Client = typeof client;
+const buildClientProxy = (timeoutMs: number) => {
+	const startTime = Date.now();
+
+	const handler = {
+		get(target: Client, prop: keyof Client) {
+			if (Date.now() >= startTime + timeoutMs) {
+				throw new Error('Lock expired, cannot write any more data');
+			}
+
+			const value = target[prop];
+			return typeof value === 'function' ? value.bind(target) : value;
+		}
+	}
+
+	return new Proxy(client, handler) as Client;
+};
 
 const pause = (duration: number) => {
 	return new Promise((resolve) => {
